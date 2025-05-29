@@ -58,19 +58,17 @@ export class ChessEngine {
   }
 
   getGameState(): GameState {
-    return JSON.parse(JSON.stringify(this.gameState)) // Deep copy to prevent mutations
+    return JSON.parse(JSON.stringify(this.gameState))
   }
 
   reset(): void {
     this.gameState = this.getInitialGameState()
   }
 
-  // Create a deep copy of the current state
   copyState(): GameState {
     return JSON.parse(JSON.stringify(this.gameState))
   }
 
-  // Set state from a copy (for minimax)
   setState(state: GameState): void {
     this.gameState = JSON.parse(JSON.stringify(state))
   }
@@ -107,7 +105,6 @@ export class ChessEngine {
     return moves.filter((move) => this.isLegalMove(move))
   }
 
-  // New method to generate moves for a specific piece
   generateMovesForPiece(position: Position): Move[] {
     const piece = this.getPiece(position)
     if (!piece || piece.color !== this.gameState.turn) return []
@@ -135,6 +132,26 @@ export class ChessEngine {
     }
   }
 
+  // Separate method for attack generation (no castling to avoid recursion)
+  private generateAttackMoves(from: Position, piece: Piece): Move[] {
+    switch (piece.type) {
+      case "pawn":
+        return this.generatePawnAttacks(from, piece)
+      case "rook":
+        return this.generateRookMoves(from, piece)
+      case "knight":
+        return this.generateKnightMoves(from, piece)
+      case "bishop":
+        return this.generateBishopMoves(from, piece)
+      case "queen":
+        return this.generateQueenMoves(from, piece)
+      case "king":
+        return this.generateKingAttacks(from, piece)
+      default:
+        return []
+    }
+  }
+
   private generatePawnMoves(from: Position, piece: Piece): Move[] {
     const moves: Move[] = []
     const direction = piece.color === "white" ? -1 : 1
@@ -144,9 +161,7 @@ export class ChessEngine {
     // Forward move
     const oneStep = { row: from.row + direction, col: from.col }
     if (this.isValidPosition(oneStep) && !this.getPiece(oneStep)) {
-      // Check for promotion
       if (oneStep.row === promotionRow) {
-        // Add promotion moves
         for (const promotionPiece of ["queen", "rook", "bishop", "knight"] as const) {
           moves.push({
             from,
@@ -179,9 +194,7 @@ export class ChessEngine {
       if (this.isValidPosition(capturePos)) {
         const target = this.getPiece(capturePos)
 
-        // Normal capture
         if (target && target.color !== piece.color) {
-          // Check for promotion on capture
           if (capturePos.row === promotionRow) {
             for (const promotionPiece of ["queen", "rook", "bishop", "knight"] as const) {
               moves.push({
@@ -215,6 +228,21 @@ export class ChessEngine {
             })
           }
         }
+      }
+    }
+
+    return moves
+  }
+
+  // Pawn attacks only (for attack detection)
+  private generatePawnAttacks(from: Position, piece: Piece): Move[] {
+    const moves: Move[] = []
+    const direction = piece.color === "white" ? -1 : 1
+
+    for (const colOffset of [-1, 1]) {
+      const capturePos = { row: from.row + direction, col: from.col + colOffset }
+      if (this.isValidPosition(capturePos)) {
+        moves.push({ from, to: capturePos, piece })
       }
     }
 
@@ -413,12 +441,37 @@ export class ChessEngine {
     return moves
   }
 
+  // King attacks only (for attack detection, no castling)
+  private generateKingAttacks(from: Position, piece: Piece): Move[] {
+    const moves: Move[] = []
+    const directions = [
+      [-1, -1],
+      [-1, 0],
+      [-1, 1],
+      [0, -1],
+      [0, 1],
+      [1, -1],
+      [1, 0],
+      [1, 1],
+    ]
+
+    for (const [rowOffset, colOffset] of directions) {
+      const to = { row: from.row + rowOffset, col: from.col + colOffset }
+      if (this.isValidPosition(to)) {
+        moves.push({ from, to, piece })
+      }
+    }
+
+    return moves
+  }
+
   private isSquareAttacked(pos: Position, byColor: Color): boolean {
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 8; col++) {
         const piece = this.gameState.board[row][col]
         if (piece && piece.color === byColor) {
-          const attacks = this.generatePieceMoves({ row, col }, piece)
+          // Use attack-only move generation to avoid recursion
+          const attacks = this.generateAttackMoves({ row, col }, piece)
           if (attacks.some((move) => move.to.row === pos.row && move.to.col === pos.col)) {
             return true
           }
@@ -429,26 +482,20 @@ export class ChessEngine {
   }
 
   isLegalMove(move: Move): boolean {
-    // Save current state
     const originalState = this.copyState()
 
     try {
-      // Make the move
       this.setPiece(move.to, move.piece)
       this.setPiece(move.from, null)
 
-      // Handle en passant capture
       if (move.isEnPassant && move.capturedPiece) {
         const direction = move.piece.color === "white" ? 1 : -1
         this.setPiece({ row: move.to.row + direction, col: move.to.col }, null)
       }
 
-      // Check if the king is in check after the move
       const isLegal = !this.isInCheck(move.piece.color)
-
       return isLegal
     } finally {
-      // Always restore the original state
       this.setState(originalState)
     }
   }
@@ -459,21 +506,7 @@ export class ChessEngine {
     if (!kingPos) return false
 
     const opponentColor = checkColor === "white" ? "black" : "white"
-
-    // Check if any opponent piece can attack the king
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 8; col++) {
-        const piece = this.gameState.board[row][col]
-        if (piece && piece.color === opponentColor) {
-          const attacks = this.generatePieceMoves({ row, col }, piece)
-          if (attacks.some((move) => move.to.row === kingPos.row && move.to.col === kingPos.col)) {
-            return true
-          }
-        }
-      }
-    }
-
-    return false
+    return this.isSquareAttacked(kingPos, opponentColor)
   }
 
   getKingPosition(color: Color): Position | null {
@@ -491,17 +524,14 @@ export class ChessEngine {
   makeMove(move: Move): boolean {
     if (!this.isLegalMove(move)) return false
 
-    // Execute the move
     this.setPiece(move.to, move.piece)
     this.setPiece(move.from, null)
 
-    // Handle en passant capture
     if (move.isEnPassant && move.capturedPiece) {
       const direction = move.piece.color === "white" ? 1 : -1
       this.setPiece({ row: move.to.row + direction, col: move.to.col }, null)
     }
 
-    // Handle castling
     if (move.isCastling) {
       if (move.to.col === 6) {
         // King-side castling
@@ -524,7 +554,6 @@ export class ChessEngine {
       }
     }
 
-    // Handle pawn promotion
     if (move.promotionPiece) {
       this.setPiece(move.to, {
         type: move.promotionPiece,
@@ -532,13 +561,8 @@ export class ChessEngine {
       })
     }
 
-    // Update castling rights
     this.updateCastlingRights(move)
-
-    // Update en passant target
     this.gameState.enPassantTarget = move.enPassantTarget || null
-
-    // Update game state
     this.gameState.lastMove = move
     this.gameState.turn = this.gameState.turn === "white" ? "black" : "white"
 
@@ -550,7 +574,6 @@ export class ChessEngine {
   }
 
   private updateCastlingRights(move: Move): void {
-    // If king moves, remove all castling rights for that color
     if (move.piece.type === "king") {
       if (move.piece.color === "white") {
         this.gameState.castlingRights.whiteKingSide = false
@@ -561,7 +584,6 @@ export class ChessEngine {
       }
     }
 
-    // If rook moves or is captured, remove corresponding castling right
     if (move.piece.type === "rook") {
       if (move.piece.color === "white") {
         if (move.from.row === 7 && move.from.col === 0) {
@@ -578,7 +600,6 @@ export class ChessEngine {
       }
     }
 
-    // If a rook is captured
     if (move.capturedPiece && move.capturedPiece.type === "rook") {
       if (move.capturedPiece.color === "white") {
         if (move.to.row === 7 && move.to.col === 0) {
@@ -612,7 +633,6 @@ export class ChessEngine {
     const fromSquare = this.positionToAlgebraic(move.from)
     const toSquare = this.positionToAlgebraic(move.to)
 
-    // Special notations
     if (move.isCastling) {
       return move.to.col === 6 ? "O-O" : "O-O-O"
     }
@@ -621,7 +641,6 @@ export class ChessEngine {
     const capture = move.capturedPiece || move.isEnPassant ? "x" : ""
     const promotion = move.promotionPiece ? `=${move.promotionPiece.charAt(0).toUpperCase()}` : ""
 
-    // Check if this move results in check or checkmate
     const originalState = this.copyState()
     let checkNotation = ""
 
@@ -640,7 +659,7 @@ export class ChessEngine {
   }
 
   private positionToAlgebraic(pos: Position): string {
-    const file = String.fromCharCode(97 + pos.col) // 'a' + col
+    const file = String.fromCharCode(97 + pos.col)
     const rank = (8 - pos.row).toString()
     return file + rank
   }
